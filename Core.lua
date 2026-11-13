@@ -166,6 +166,9 @@ local function CollectGeneral()
 	g.realmID = lab.Try("GetRealmID", GetRealmID)
 	g.faction = lab.Try("UnitFactionGroup", UnitFactionGroup, "player")
 	g.locale = lab.Try("GetLocale", GetLocale)
+	if C_AutoComplete and C_AutoComplete.GetAutoCompleteRealms then
+		g.connectedRealms = lab.Try("C_AutoComplete.GetAutoCompleteRealms", C_AutoComplete.GetAutoCompleteRealms)
+	end
 	if C_CVar then g.scriptErrors = lab.Try("C_CVar.GetCVar scriptErrors", C_CVar.GetCVar, "scriptErrors") end
 	g.addons = {}
 	if C_AddOns and C_AddOns.GetNumAddOns then

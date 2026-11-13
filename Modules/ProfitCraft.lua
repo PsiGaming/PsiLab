@@ -6,7 +6,9 @@
 local _, lab = ...
 
 local CALLER_ID = "PsiLab"
-local MAX_RECIPES = 40  -- recipes recorded in detail per profession
+local MAX_RECIPES = 200          -- learned recipes recorded in detail per profession
+local MAX_UNLEARNED_SAMPLE = 15  -- unlearned recipes recorded (id, name, profession) as examples
+local MAX_SEEN_REALMS = 100      -- distinct realms recorded from targeted / hovered players
 
 -- Items to check (Vanilla IDs; the recorded names show whether they match in Forever).
 local TEST_ITEMS = {
@@ -22,7 +24,7 @@ local TEST_ITEMS = {
 local module = {
 	events = { "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "TRADE_SKILL_LIST_UPDATE", "NEW_RECIPE_LEARNED",
 		"BAG_UPDATE_DELAYED", "MERCHANT_SHOW", "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
-		"GET_ITEM_INFO_RECEIVED" },
+		"GET_ITEM_INFO_RECEIVED", "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT" },
 }
 
 local function AuctionatorAPI()
@@ -124,14 +126,50 @@ function module:CheckProfession()
 	local key = type(base) == "table" and type(base.professionName) == "string" and base.professionName or "unknown"
 
 	local filtered = lab.Try("GetFilteredRecipeIDs", C_TradeSkillUI.GetFilteredRecipeIDs)
-	local ids = filtered and type(filtered[1]) == "table" and filtered[1] or {}
-	p.filteredCount = #ids
-	p.filteredIDs = ids
+	local filteredIDs = filtered and type(filtered[1]) == "table" and filtered[1] or {}
+	p.filteredCount = #filteredIDs
+	p.filteredIDs = filteredIDs
+
+	-- GetAllRecipeIDs: which profession each recipe belongs to, and which are learned.
+	local ids = {}  -- learned recipes, recorded in detail below
 	if C_TradeSkillUI.GetAllRecipeIDs then
 		local all = lab.Try("GetAllRecipeIDs", C_TradeSkillUI.GetAllRecipeIDs)
-		p.allCount = all and type(all[1]) == "table" and #all[1] or "<error>"
+		local allIDs = all and type(all[1]) == "table" and all[1] or {}
+		local inFiltered = {}
+		for _, id in ipairs(filteredIDs) do inFiltered[id] = true end
+		local summary = { total = #allIDs, learned = 0, byProfession = {}, unlearnedSample = {},
+			learnedNotInFiltered = 0, filteredNotLearned = 0, infoMissing = 0 }
+		for _, id in ipairs(allIDs) do
+			local okInfo, info = pcall(C_TradeSkillUI.GetRecipeInfo, id)
+			local okProf, prof = pcall(C_TradeSkillUI.GetProfessionInfoByRecipeID, id)
+			local profName = okProf and type(prof) == "table" and (prof.parentProfessionName or prof.professionName)
+				or "<unknown>"
+			if profName == "" then profName = "<empty>" end
+			local bucket = summary.byProfession[profName]
+			if not bucket then
+				bucket = { total = 0, learned = 0 }
+				summary.byProfession[profName] = bucket
+			end
+			bucket.total = bucket.total + 1
+			if not (okInfo and type(info) == "table") then
+				summary.infoMissing = summary.infoMissing + 1
+			elseif info.learned then
+				summary.learned = summary.learned + 1
+				bucket.learned = bucket.learned + 1
+				ids[#ids + 1] = id
+				if not inFiltered[id] then summary.learnedNotInFiltered = summary.learnedNotInFiltered + 1 end
+			else
+				if inFiltered[id] then summary.filteredNotLearned = summary.filteredNotLearned + 1 end
+				if #summary.unlearnedSample < MAX_UNLEARNED_SAMPLE then
+					summary.unlearnedSample[#summary.unlearnedSample + 1] = { id = id, name = info.name, profession = profName }
+				end
+			end
+		end
+		p.allRecipes = summary
+		p.allCount = #allIDs
 	else
 		p.allCount = "<no function>"
+		ids = filteredIDs
 	end
 
 	self.data.auctionator = self.data.auctionator or { prices = {} }
@@ -162,8 +200,8 @@ function module:CheckProfession()
 	self.data.professions = self.data.professions or {}
 	self.data.professions[key] = p
 	self:CheckFrames()
-	lab.Print(string.format("ProfitCraft: captured %s (%d recipes listed, %d recorded in detail).", key,
-		p.filteredCount, #p.recipes))
+	lab.Print(string.format("ProfitCraft: captured %s (window lists %d; all recipes %s, learned %s; %d recorded in detail).",
+		key, p.filteredCount, tostring(p.allCount), tostring(p.allRecipes and p.allRecipes.learned or "?"), #p.recipes))
 end
 
 function module:Run()
@@ -185,6 +223,27 @@ function module:OnEvent(event)
 		end)
 	elseif event == "GET_ITEM_INFO_RECEIVED" then
 		self:CheckItems()
+	elseif event == "PLAYER_TARGET_CHANGED" then
+		self:RecordRealm("target")
+	elseif event == "UPDATE_MOUSEOVER_UNIT" then
+		self:RecordRealm("mouseover")
+	end
+end
+
+-- Counts the realms of other players you target or hover over: shows whether players from
+-- several realms share this ruleset's world (and so, probably, its AH).
+function module:RecordRealm(unit)
+	if not (UnitExists(unit) and UnitIsPlayer(unit)) or UnitIsUnit(unit, "player") then return end
+	local _, realm = UnitFullName(unit)
+	realm = (realm and realm ~= "") and realm or "<same as yours>"
+	self.data.seenRealms = self.data.seenRealms or {}
+	local seen = self.data.seenRealms
+	if seen[realm] then
+		seen[realm] = seen[realm] + 1
+	else
+		local count = 0
+		for _ in pairs(seen) do count = count + 1 end
+		if count < MAX_SEEN_REALMS then seen[realm] = 1 end
 	end
 end
 
