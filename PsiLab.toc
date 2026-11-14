@@ -2,7 +2,7 @@
 ## Title: PsiLab
 ## Notes: Development tool: collects game data for building addons and saves it to a file. Read-only.
 ## Author: Psipherious
-## Version: 0.1-alpha.1
+## Version: 0.1-alpha.2
 ## SavedVariables: PsiLabDB
 ## OptionalDeps: Auctionator
 

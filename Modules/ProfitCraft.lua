@@ -1,7 +1,9 @@
 -- PsiLab module: ProfitCraft.
 -- Collects what ProfitCraft 0.1 relies on: the recipe API, recipe data (output quantities, reagents),
 -- item stack sizes and sell prices, Auctionator's public API on Forever, and the profession window's layout.
--- Captures automatically each time a profession window opens; "/lab run" captures again.
+-- Also, for the trainer and recipe tooltips: trainer services and their tooltip data, recipe items in the
+-- bags, and whether recipes can be read with no profession window open.
+-- Captures automatically each time a profession window or trainer opens; "/lab run" captures again.
 
 local _, lab = ...
 
@@ -9,6 +11,10 @@ local CALLER_ID = "PsiLab"
 local MAX_RECIPES = 200          -- learned recipes recorded in detail per profession
 local MAX_UNLEARNED_SAMPLE = 15  -- unlearned recipes recorded (id, name, profession) as examples
 local MAX_SEEN_REALMS = 100      -- distinct realms recorded from targeted / hovered players
+local MAX_TRAINER_SERVICES = 80  -- trainer services recorded per trainer
+local MAX_RECIPE_ITEMS = 20      -- recipe items (Recipe:, Pattern:, Plans: ...) recorded from the bags
+local MAX_CLOSED_CHECKS = 10     -- recipes read again while no profession window is open
+local RECIPE_ITEM_CLASS = 9      -- Enum.ItemClass.Recipe
 
 -- Items to check (Vanilla IDs; the recorded names show whether they match in Forever).
 local TEST_ITEMS = {
@@ -24,7 +30,7 @@ local TEST_ITEMS = {
 local module = {
 	events = { "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "TRADE_SKILL_LIST_UPDATE", "NEW_RECIPE_LEARNED",
 		"BAG_UPDATE_DELAYED", "MERCHANT_SHOW", "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
-		"GET_ITEM_INFO_RECEIVED", "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT" },
+		"GET_ITEM_INFO_RECEIVED", "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "TRAINER_UPDATE" },
 }
 
 local function AuctionatorAPI()
@@ -204,16 +210,117 @@ function module:CheckProfession()
 		key, p.filteredCount, tostring(p.allCount), tostring(p.allRecipes and p.allRecipes.learned or "?"), #p.recipes))
 end
 
+-- Trainer and recipe-item checks (added 2026-11-14, for ProfitCraft's trainer and recipe tooltips).
+-- What a recipe's details look like when read with no profession window open.
+local function ReadRecipe(recipeID)
+	local r = { recipeID = recipeID }
+	r.info = lab.Try("GetRecipeInfo " .. recipeID, C_TradeSkillUI.GetRecipeInfo, recipeID)
+	r.schematic = lab.Try("GetRecipeSchematic " .. recipeID, C_TradeSkillUI.GetRecipeSchematic, recipeID, false)
+	r.profession = lab.Try("GetProfessionInfoByRecipeID " .. recipeID, C_TradeSkillUI.GetProfessionInfoByRecipeID,
+		recipeID)
+	return r
+end
+
+local function ProfessionWindowOpen()
+	return type(ProfessionsFrame) == "table" and ProfessionsFrame:IsShown() or false
+end
+
+-- At a trainer: each service's info, cost and full tooltip data (does it carry the recipe's ID?), and the
+-- recipe read from that ID while the profession window is (normally) closed.
+function module:CheckTrainer()
+	if type(GetNumTrainerServices) ~= "function" then return end
+	local t = { at = lab.Now(), professionWindowOpen = ProfessionWindowOpen(), services = {} }
+	local count = lab.Try("GetNumTrainerServices", GetNumTrainerServices)
+	t.count = count and count[1]
+	t.npc = lab.Try("UnitName npc", UnitName, "npc")
+	for i = 1, math.min(type(t.count) == "number" and t.count or 0, MAX_TRAINER_SERVICES) do
+		local s = { index = i }
+		s.info = lab.Try("GetTrainerServiceInfo " .. i, GetTrainerServiceInfo, i)
+		s.cost = lab.Try("GetTrainerServiceCost " .. i, GetTrainerServiceCost, i)
+		s.skillLine = lab.Try("GetTrainerServiceSkillLine " .. i, GetTrainerServiceSkillLine, i)
+		s.skillReq = lab.Try("GetTrainerServiceSkillReq " .. i, GetTrainerServiceSkillReq, i)
+		if C_TooltipInfo and C_TooltipInfo.GetTrainerService then
+			local data = lab.Try("C_TooltipInfo.GetTrainerService " .. i, C_TooltipInfo.GetTrainerService, i)
+			local tip = data and data[1]
+			s.tooltip = tip
+			if type(tip) == "table" and type(tip.id) == "number" and C_TradeSkillUI then s.recipe = ReadRecipe(tip.id) end
+		end
+		t.services[i] = s
+	end
+	self.data.trainers = self.data.trainers or {}
+	local name = t.npc and t.npc[1]
+	self.data.trainers[type(name) == "string" and name or "unknown"] = t
+	lab.Print(string.format("ProfitCraft: captured trainer %s (%s services).", tostring(name), tostring(t.count)))
+end
+
+-- Recipe items in the bags: item info, the item's spell, its full tooltip data (does it name the recipe or
+-- the crafted item?), and the recipe read from the spell ID.
+function module:CheckRecipeItems()
+	if not (C_Container and C_Item) then return end
+	local found, seen = {}, {}
+	for bag = 0, (NUM_TOTAL_EQUIPPED_BAG_SLOTS or 4) do
+		for slot = 1, C_Container.GetContainerNumSlots(bag) or 0 do
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			local itemID = info and info.itemID
+			if itemID and not seen[itemID] and #found < MAX_RECIPE_ITEMS
+				and select(12, C_Item.GetItemInfo(itemID)) == RECIPE_ITEM_CLASS then
+				seen[itemID] = true
+				local r = { itemID = itemID, link = info.hyperlink, bag = bag, slot = slot }
+				r.itemInfo = lab.Try("GetItemInfo " .. itemID, C_Item.GetItemInfo, itemID)
+				r.itemSpell = lab.Try("GetItemSpell " .. itemID, C_Item.GetItemSpell, itemID)
+				if C_TooltipInfo and C_TooltipInfo.GetBagItem then
+					local data = lab.Try("C_TooltipInfo.GetBagItem " .. bag .. " " .. slot, C_TooltipInfo.GetBagItem, bag, slot)
+					r.tooltip = data and data[1]
+				end
+				local spellID = r.itemSpell and r.itemSpell[2]
+				if type(spellID) == "number" and C_TradeSkillUI then r.recipeFromSpell = ReadRecipe(spellID) end
+				found[#found + 1] = r
+			end
+		end
+	end
+	self.data.recipeItems = { at = lab.Now(), professionWindowOpen = ProfessionWindowOpen(), items = found }
+end
+
+-- Reads recipes recorded earlier (learned and unlearned) again while no profession window is open: can
+-- ProfitCraft read reagents and products away from the profession window?
+function module:CheckRecipesWhileClosed()
+	if ProfessionWindowOpen() or not (C_TradeSkillUI and self.data.professions) then return end
+	local ids = {}
+	for _, p in pairs(self.data.professions) do
+		for _, r in ipairs(type(p.recipes) == "table" and p.recipes or {}) do
+			if #ids < MAX_CLOSED_CHECKS / 2 then ids[#ids + 1] = r.recipeID end
+		end
+		local sample = type(p.allRecipes) == "table" and p.allRecipes.unlearnedSample or {}
+		for _, r in ipairs(sample) do
+			if #ids < MAX_CLOSED_CHECKS then ids[#ids + 1] = r.id end
+		end
+	end
+	local out = { at = lab.Now(), recipes = {} }
+	for _, id in ipairs(ids) do out.recipes[#out.recipes + 1] = ReadRecipe(id) end
+	self.data.recipesWhileClosed = out
+end
+
 function module:Run()
 	self:CheckApis()
 	self:CheckItems()
 	self:CheckAuctionator()
-	if type(ProfessionsFrame) == "table" and ProfessionsFrame:IsShown() then self:CheckProfession() end
+	self:CheckRecipeItems()
+	self:CheckRecipesWhileClosed()
+	if ProfessionWindowOpen() then self:CheckProfession() end
+	if type(ClassTrainerFrame) == "table" and ClassTrainerFrame:IsShown() then self:CheckTrainer() end
 end
 
-local capturePending = false
+local capturePending, trainerPending = false, false
 function module:OnEvent(event)
-	if event == "TRADE_SKILL_SHOW" and not capturePending then
+	if event == "TRAINER_UPDATE" and not trainerPending then
+		-- TRAINER_UPDATE can fire several times in a row; capture once, a moment later.
+		trainerPending = true
+		C_Timer.After(1, function()
+			trainerPending = false
+			local ok, err = pcall(self.CheckTrainer, self)
+			if not ok then lab.RecordError("ProfitCraft.CheckTrainer: " .. tostring(err)) end
+		end)
+	elseif event == "TRADE_SKILL_SHOW" and not capturePending then
 		-- Wait a moment after the window opens so the recipe list is filled.
 		capturePending = true
 		C_Timer.After(1, function()

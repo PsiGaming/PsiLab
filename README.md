@@ -9,7 +9,7 @@ With [WowUp](https://wowup.io): install from this repository's URL. Or download 
 ## Use
 
 1. Log in; chat shows "PsiLab: ready".
-2. Do what the module needs (for ProfitCraft: open each crafting profession once).
+2. Do what the module needs (for ProfitCraft: open each crafting profession once; visit a profession trainer; carry a recipe item or two).
 3. `/reload` or log out. The game then writes `WTF/Account/<account>/SavedVariables/PsiLab.lua`.
 
 Commands (`/lab`, or `/psilab`):
@@ -21,7 +21,7 @@ Commands (`/lab`, or `/psilab`):
 
 ## Modules
 
-- **ProfitCraft**: recipe API, recipe data, item stack sizes and sell prices, Auctionator's public API, profession window layout.
+- **ProfitCraft**: recipe API, recipe data, item stack sizes and sell prices, Auctionator's public API, profession window layout; trainer services and their tooltip data, recipe items in the bags, and recipes read with no profession window open.
 
 ## License
 
