@@ -87,9 +87,13 @@ end
 -- Per-character record
 ---------------------------------------------------------------------------
 
+-- "First Last": Forever has no realm names, so "First - <realm>" gave two characters with the same first name one
+-- entry. Older "First - ..." entries are left as they are (they may mix two characters).
 local function CharacterKey()
-  local name, realm = UnitName("player"), GetRealmName()
-  return tostring(name) .. " - " .. tostring(realm)
+  local first, last = UnitFullName("player")
+  first = tostring(first or UnitName("player"))
+  if type(last) == "string" and last ~= "" and not IsSecret(last) then return first .. " " .. last end
+  return first
 end
 
 function module:Character()
